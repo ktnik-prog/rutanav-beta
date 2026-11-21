@@ -1,0 +1,49 @@
+# House-number add-ons (plan item 45): from the zoom-15 region maps of a maps-<build> release, keep only the address points
+# of zoom 15 (houses.py) → release houses-<build> (not latest), one small <id>.pmtiles per region. The catalog is NOT touched:
+# the new one (with houseUrl / houseSizeBytes / houseSha256) is left as an artifact and published separately, by hand.
+name: house-addons
+on:
+  workflow_dispatch:
+    inputs:
+      maps:
+        description: "Release with the zoom-15 maps, e.g. maps-20261120"
+        required: true
+permissions:
+  contents: write
+jobs:
+  houses:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MAPS: ${{ inputs.maps }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: pmtiles (Python) 3.8.1
+        run: python3 -m venv v && v/bin/pip install pmtiles==3.8.1
+      - name: Region maps
+        run: |
+          mkdir -p maps houses
+          gh release download "$MAPS" -p '*.pmtiles' -D maps
+          ls -l maps
+      - name: Address points only
+        run: |
+          for f in maps/*.pmtiles; do
+            v/bin/python -I .github/scripts/houses.py tiles "$f" "houses/$(basename "$f")"
+          done
+          ls -l houses
+      - name: New catalog (artifact only)
+        run: |
+          TAG="houses-${MAPS#maps-}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          gh release download maps-catalog -p maps.json -O live-maps.json
+          v/bin/python -I .github/scripts/houses.py catalog live-maps.json houses "$TAG" > maps.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maps-catalog-${{ env.TAG }}
+          path: maps.json
+      - name: Release houses-<build> (not latest)
+        run: |
+          gh release create "$TAG" --latest=false --title "House numbers ${MAPS#maps-}" \
+            --notes "Address points of zoom 15 from $MAPS, one file per region (Ruta 1.0.42+: house numbers over the zoom-14 maps). Catalog: maps-catalog." \
+            houses/*.pmtiles
