@@ -1,0 +1,53 @@
+# Re-cuts the 25 offline region maps from a Protomaps daily build, on GitHub's network (the owner's home line is too slow
+# for 2+ GB), into a new release maps-<build> (not latest). The catalog (maps-catalog/maps.json) is NOT touched: the new
+# one is left as an artifact of the run and published separately, by hand.
+name: recut-maps
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Protomaps build date, e.g. 20261118 (https://build.protomaps.com/<build>.pmtiles)"
+        required: true
+      maxzoom:
+        description: "Max zoom"
+        default: "15"
+permissions:
+  contents: write
+jobs:
+  recut:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BUILD: ${{ inputs.build }}
+      MAXZOOM: ${{ inputs.maxzoom }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: pmtiles 1.31.2
+        run: |
+          curl -fsSL -o pm.tgz https://github.com/protomaps/go-pmtiles/releases/download/v1.31.2/go-pmtiles_1.31.2_Linux_x86_64.tar.gz
+          echo "3ed7dbf4ec2e6dfe5e25b6f70d1ffc932729f93c86db353bf514dd71010a312f  pm.tgz" | sha256sum -c -
+          tar xzf pm.tgz pmtiles && ./pmtiles version
+      - name: Outlines from the live catalog
+        run: |
+          gh release download maps-catalog -p maps.json -O live-maps.json
+          python3 -I .github/scripts/recut.py outlines live-maps.json outlines
+      - name: Cut the regions
+        run: |
+          mkdir -p maps
+          for f in outlines/*.geojson; do
+            id=$(basename "$f" .geojson)
+            ./pmtiles extract "https://build.protomaps.com/${BUILD}.pmtiles" "maps/${id}.pmtiles" --region="$f" --maxzoom="$MAXZOOM" --download-threads=4
+            ls -l "maps/${id}.pmtiles"
+          done
+      - name: New catalog (artifact only)
+        run: python3 -I .github/scripts/recut.py catalog live-maps.json maps "maps-${BUILD}" "${BUILD}" > maps.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maps-catalog-${{ inputs.build }}
+          path: maps.json
+      - name: Release maps-<build> (not latest)
+        run: |
+          gh release create "maps-${BUILD}" --latest=false --title "Offline maps ${BUILD} (z${MAXZOOM})" \
+            --notes "Protomaps build ${BUILD}, cut by region to zoom ${MAXZOOM} (houses and house numbers). Catalog: maps-catalog." \
+            maps/*.pmtiles
